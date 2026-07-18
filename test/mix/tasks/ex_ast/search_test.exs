@@ -262,6 +262,50 @@ defmodule Mix.Tasks.ExAst.SearchTest do
     end
 
     @tag :tmp_dir
+    test "exposes definition name and arity in JSON", %{tmp_dir: dir} do
+      file = Path.join(dir, "sample.ex")
+      File.write!(file, "defmodule M do\n  def apply(a, b), do: {a, b}\nend\n")
+
+      output =
+        capture_io(fn ->
+          Mix.Task.run("ex_ast.search", ["def name/2 do ... end", file, "--format", "json"])
+        end)
+
+      assert %{
+               "matches" => [
+                 %{"definition" => %{"kind" => "def", "name" => "apply", "arity" => 2}}
+               ]
+             } =
+               Jason.decode!(output)
+    end
+
+    @tag :tmp_dir
+    test "plain output prints the matched definition kind/name/arity", %{tmp_dir: dir} do
+      file = Path.join(dir, "sample.ex")
+      File.write!(file, "defmodule M do\n  defp apply(a, b), do: {a, b}\nend\n")
+
+      output =
+        capture_io(fn ->
+          Mix.Task.run("ex_ast.search", ["defp name/2 do ... end", file])
+        end)
+
+      assert output =~ "# defp apply/2"
+    end
+
+    @tag :tmp_dir
+    test "non-definition matches omit the definition field in JSON", %{tmp_dir: dir} do
+      file = Path.join(dir, "sample.ex")
+      File.write!(file, "IO.inspect(value)\n")
+
+      output =
+        capture_io(fn ->
+          Mix.Task.run("ex_ast.search", ["IO.inspect(_)", file, "--format", "json"])
+        end)
+
+      assert %{"matches" => [match]} = Jason.decode!(output)
+      refute Map.has_key?(match, "definition")
+    end
+    @tag :tmp_dir
     test "a map pattern with ... does not abort the run", %{tmp_dir: dir} do
       file = Path.join(dir, "sample.ex")
 
