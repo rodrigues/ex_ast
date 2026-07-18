@@ -328,12 +328,18 @@ defmodule Mix.Tasks.ExAst.Search do
 
   defp json?(opts), do: opts[:json] || opts[:format] == "json"
 
-  defp print_match(%{file: file, line: line, source: source, captures: captures}) do
+  defp print_match(%{file: file, line: line, source: source, captures: captures} = match) do
     Output.puts("#{file}:#{line}")
     source |> String.split("\n") |> Enum.each(&Output.puts("  #{&1}"))
+    print_definition(match[:definition])
     print_captures(captures)
     Output.puts("")
   end
+
+  defp print_definition(%{kind: kind, name: name, arity: arity}),
+    do: Output.puts("  # #{kind} #{name}/#{arity}")
+
+  defp print_definition(_definition), do: :ok
 
   defp print_captures(captures) when map_size(captures) == 0, do: :ok
 

@@ -59,11 +59,12 @@ defmodule ExAST do
   alias ExAST.Rewriter
 
   @type match :: %{
-          file: String.t(),
-          line: pos_integer(),
-          range: Sourceror.Range.t() | nil,
-          source: String.t(),
-          captures: ExAST.Pattern.captures()
+          required(:file) => String.t(),
+          required(:line) => pos_integer(),
+          required(:range) => Sourceror.Range.t() | nil,
+          required(:source) => String.t(),
+          required(:captures) => ExAST.Pattern.captures(),
+          optional(:definition) => %{kind: atom(), name: atom(), arity: non_neg_integer()}
         }
 
   @type pattern_name :: ExAST.Patcher.pattern_name()
@@ -252,14 +253,40 @@ defmodule ExAST do
   end
 
   defp search_match(file, lines, range, node, captures) do
-    %{
+    match = %{
       file: file,
       line: match_line(range),
       range: range,
       source: source_fragment(lines, range) || node_to_string(node),
       captures: captures
     }
+
+    case definition_info(node) do
+      nil -> match
+      info -> Map.put(match, :definition, info)
+    end
   end
+
+  # Definition name/arity for def-like matches, surfaced as a first-class field
+  # (notably in `--format json`) instead of forcing callers to reverse-engineer
+  # arity from the shape of `captures`.
+  defp definition_info({form, _meta, [head | _]})
+       when form in [:def, :defp, :defmacro, :defmacrop] do
+    case def_head_name_arity(head) do
+      {name, arity} -> %{kind: form, name: name, arity: arity}
+      :error -> nil
+    end
+  end
+
+  defp definition_info(_node), do: nil
+
+  defp def_head_name_arity({:when, _meta, [head | _guards]}), do: def_head_name_arity(head)
+  defp def_head_name_arity({name, _meta, nil}) when is_atom(name), do: {name, 0}
+
+  defp def_head_name_arity({name, _meta, args}) when is_atom(name) and is_list(args),
+    do: {name, length(args)}
+
+  defp def_head_name_arity(_head), do: :error
 
   defp maybe_take(matches, nil), do: matches
   defp maybe_take(matches, limit), do: Enum.take(matches, limit)
