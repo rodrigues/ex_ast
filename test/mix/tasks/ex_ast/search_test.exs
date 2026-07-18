@@ -260,6 +260,27 @@ defmodule Mix.Tasks.ExAst.SearchTest do
       assert %{"count" => 1, "matches" => [%{"captures" => %{"expr" => "value"}}]} =
                Jason.decode!(output)
     end
+
+    @tag :tmp_dir
+    test "a file that errors mid-search is skipped instead of aborting the run", %{tmp_dir: dir} do
+      file = Path.join(dir, "sample.ex")
+
+      File.write!(file, "def broken do\n  IO.inspect(:oops\nend\n")
+
+      stderr =
+        capture_io(:stderr, fn ->
+          output =
+            capture_io(fn ->
+              Mix.Task.run("ex_ast.search", ["IO.inspect(value)", file])
+            end)
+
+          send(self(), {:output, output})
+        end)
+
+      assert stderr =~ "ex_ast: skipping"
+      assert_received {:output, output}
+      assert output =~ "0 match(es)"
+    end
   end
 
   @tag :tmp_dir
