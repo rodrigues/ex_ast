@@ -277,6 +277,36 @@ defmodule Mix.Tasks.ExAst.SearchTest do
 
       assert output =~ "1 match(es)"
     end
+
+    @tag :tmp_dir
+    test "--debug-query prints the parsed pattern", %{tmp_dir: dir} do
+      file = Path.join(dir, "sample.ex")
+      File.write!(file, "IO.inspect(value)\n")
+
+      output =
+        capture_io(fn ->
+          Mix.Task.run("ex_ast.search", ["IO.inspect(expr)", file, "--debug-query"])
+        end)
+
+      assert output =~ "signature:  {:call, :inspect, 1}"
+      assert output =~ "remote call IO.inspect, arity 1"
+      assert output =~ "expr — capture"
+    end
+
+    @tag :tmp_dir
+    test "--debug-query prints even when a broad search is refused", %{tmp_dir: dir} do
+      file = Path.join(dir, "sample.ex")
+      File.write!(file, "IO.inspect(value)\n")
+
+      output =
+        capture_io(fn ->
+          assert_raise ArgumentError, fn ->
+            Mix.Task.run("ex_ast.search", ["_", file, "--debug-query", "--count"])
+          end
+        end)
+
+      assert output =~ "broad?:     true"
+    end
   end
 
   @tag :tmp_dir

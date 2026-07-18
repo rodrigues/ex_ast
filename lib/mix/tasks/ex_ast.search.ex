@@ -12,6 +12,9 @@ defmodule Mix.Tasks.ExAst.Search do
     * `-e`, `--pattern` — add a pattern to a multi-pattern batch (repeatable)
     * `--count` — only print the number of matches
     * `--count-by-file` — print per-file match counts, most matches first
+    * `--debug-query` — print how the pattern parsed (signature, `broad?`,
+      retrieval terms, and per-node structure) before searching, like
+      ast-grep's `--debug-query`
     * `--limit n` — stop after returning this many matches
     * `--allow-broad` — allow unbounded broad searches like `_`
     * `--expand-imports` — resolve bare `import Mod` (and `import Mod,
@@ -128,7 +131,9 @@ defmodule Mix.Tasks.ExAst.Search do
 
   defp run_single(args) do
     {opts, positional, _} =
-      OptionParser.parse(args, strict: @global_switches ++ SelectorOptions.switches())
+      OptionParser.parse(args,
+        strict: [debug_query: :boolean] ++ @global_switches ++ SelectorOptions.switches()
+      )
 
     case positional do
       [pattern | paths] ->
@@ -301,6 +306,7 @@ defmodule Mix.Tasks.ExAst.Search do
       SelectorOptions.pattern(pattern, opts, &validate_pattern!/1, [
         :count,
         :count_by_file,
+        :debug_query,
         :limit,
         :allow_broad
       ])
@@ -310,12 +316,15 @@ defmodule Mix.Tasks.ExAst.Search do
       |> SelectorOptions.where_opts([
         :count,
         :count_by_file,
+        :debug_query,
         :limit,
         :allow_broad,
         :format,
         :json
       ])
       |> Keyword.merge(Keyword.take(opts, [:limit, :allow_broad, :expand_imports]))
+
+    maybe_debug_query(pattern, opts)
 
     results = ExAST.search(paths, search_pattern, search_opts)
 
@@ -352,6 +361,15 @@ defmodule Mix.Tasks.ExAst.Search do
 
     Enum.each(counts, fn {file, count} -> Output.puts("#{count}\t#{file}") end)
     Output.puts("\n#{length(results)} match(es) in #{length(counts)} file(s)")
+  end
+
+  defp maybe_debug_query(pattern, opts) do
+    if opts[:debug_query] do
+      Output.with_stdout(fn ->
+        Output.puts(ExAST.Pattern.explain(pattern))
+        Output.puts("")
+      end)
+    end
   end
 
   defp json?(opts), do: opts[:json] || opts[:format] == "json"

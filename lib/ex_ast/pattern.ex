@@ -116,6 +116,147 @@ defmodule ExAST.Pattern do
   def compile_ast(%CompiledPattern{ast: ast}), do: ast
   def compile_ast(pattern), do: pattern |> to_quoted() |> normalize()
 
+  @doc """
+  Returns a human-readable explanation of how a pattern parses.
+
+  Shows the normalized AST, the candidate signature, whether the pattern is
+  broad, the high-signal index terms used for candidate retrieval, and what each
+  metavariable, wildcard, ellipsis, and call callee binds to. Useful for
+  diagnosing the recurring traps behind a surprising zero-result search: a
+  literal sitting in call position where a wildcard was intended, a capture
+  binding a larger node than expected, a broad pattern refused before it runs,
+  or retrieval terms that no file contains.
+  """
+  @spec explain(pattern()) :: String.t()
+  def explain(pattern) do
+    compiled = compile(pattern)
+
+    header = [
+      "pattern:    #{format_original(pattern)}",
+      "parsed:     #{safe_to_string(compiled.ast)}",
+      "signature:  #{inspect(compiled.signature)}",
+      "multi-node: #{compiled.multi_node?}",
+      "broad?:     #{compiled.broad?}",
+      "terms:      #{format_terms(compiled.terms)}",
+      "",
+      "structure:"
+    ]
+
+    Enum.join(header ++ describe(compiled.ast, 1), "\n")
+  end
+
+  # High-signal terms only: the discriminating ones that drive candidate
+  # retrieval. Low/normal-signal noise (`node:call`, arities) is elided.
+  defp format_terms(terms) do
+    case terms |> Enum.filter(&Terms.high_signal?/1) |> Enum.sort() do
+      [] -> "(none — retrieval falls back to the signature)"
+      high -> Enum.join(high, ", ")
+    end
+  end
+
+  defp format_original(pattern) when is_binary(pattern), do: inspect(pattern)
+  defp format_original(pattern), do: safe_to_string(compile_ast(pattern))
+
+  defp safe_to_string(ast) do
+    ast
+    |> Macro.prewalk(fn
+      {form, nil, args} -> {form, [], args}
+      other -> other
+    end)
+    |> Macro.to_string()
+  rescue
+    _ -> inspect(ast)
+  end
+
+  defp describe(_ast, depth) when depth > 6, do: [indent(depth) <> "…"]
+
+  defp describe({:_, nil, nil}, depth),
+    do: [indent(depth) <> "_ — wildcard (matches anything, not captured)"]
+
+  defp describe({:..., nil, _}, depth),
+    do: [indent(depth) <> "... — ellipsis (matches zero or more nodes)"]
+
+  defp describe({name, nil, nil}, depth) when is_atom(name) do
+    if wildcard_name?(name) do
+      [indent(depth) <> "#{name} — wildcard"]
+    else
+      [indent(depth) <> "#{name} — capture (binds one node under :#{name})"]
+    end
+  end
+
+  defp describe({:@, nil, [{name, nil, args}]}, depth) do
+    [indent(depth) <> "attribute @#{describe_inline(name)}" | describe(args || [], depth + 1)]
+  end
+
+  defp describe({form, nil, [head | rest]}, depth)
+       when form in [:def, :defp, :defmacro, :defmacrop] do
+    [indent(depth) <> "#{form} definition, head:"] ++
+      describe(head, depth + 1) ++ Enum.flat_map(rest, &describe(&1, depth + 1))
+  end
+
+  defp describe({:/, nil, [name, arity]}, depth) do
+    [
+      indent(depth) <>
+        "arity-constrained head: name=#{describe_inline(name)}, arity=#{describe_inline(arity)}"
+    ]
+  end
+
+  defp describe({{:., nil, [target, fun]}, nil, args}, depth) when is_list(args) do
+    [
+      indent(depth) <>
+        "remote call #{describe_inline(target)}.#{describe_callee(fun)}, arity #{arity_text(args)}"
+    ] ++
+      describe(args, depth + 1)
+  end
+
+  defp describe({:__block__, nil, args}, depth) when is_list(args) do
+    [indent(depth) <> "sequence of #{length(args)} statement(s):"] ++
+      Enum.flat_map(args, &describe(&1, depth + 1))
+  end
+
+  defp describe({:__aliases__, nil, parts}, depth) when is_list(parts) do
+    [indent(depth) <> "module #{Enum.map_join(parts, ".", &alias_part/1)}"]
+  end
+
+  defp describe({name, nil, args}, depth) when is_atom(name) and is_list(args) do
+    label =
+      if wildcard_name?(name),
+        do: "wildcard local call (any name)",
+        else: "local call #{name}"
+
+    [indent(depth) <> "#{label}, arity #{arity_text(args)}"] ++ describe(args, depth + 1)
+  end
+
+  defp describe({left, right}, depth) do
+    [indent(depth) <> "pair:"] ++ describe(left, depth + 1) ++ describe(right, depth + 1)
+  end
+
+  defp describe(list, depth) when is_list(list), do: Enum.flat_map(list, &describe(&1, depth))
+  defp describe(other, depth), do: [indent(depth) <> "literal #{inspect(other)}"]
+
+  defp describe_inline({:_, nil, nil}), do: "_ (any)"
+
+  defp describe_inline({name, nil, nil}) when is_atom(name) do
+    if wildcard_name?(name), do: "#{name} (wildcard)", else: "#{name} (capture)"
+  end
+
+  defp describe_inline(int) when is_integer(int), do: Integer.to_string(int)
+  defp describe_inline(atom) when is_atom(atom), do: Atom.to_string(atom)
+  defp describe_inline(other), do: safe_to_string(other)
+
+  defp describe_callee(:_), do: "_ (any function)"
+  defp describe_callee(fun) when is_atom(fun), do: Atom.to_string(fun)
+  defp describe_callee(other), do: describe_inline(other)
+
+  defp alias_part(part) when is_atom(part), do: Atom.to_string(part)
+  defp alias_part(part), do: describe_inline(part)
+
+  defp arity_text(args) do
+    if Enum.any?(args, &ellipsis?/1), do: "any (...)", else: Integer.to_string(length(args))
+  end
+
+  defp indent(depth), do: String.duplicate("  ", depth)
+
   @doc false
   @spec match_compiled(Macro.t(), ExAST.CompiledPattern.t() | Macro.t(), %{
           optional(atom()) => [atom()]

@@ -15,6 +15,7 @@ Search files for AST pattern matches. PATH can be a file, directory, or glob.
 | `-e`, `--pattern PATTERN` | Add a pattern to a multi-pattern batch (repeatable). See [Multiple patterns](#multiple-patterns) |
 | `--count` | Print match count only |
 | `--count-by-file` | Print per-file match counts, most matches first |
+| `--debug-query` | Print how the pattern parsed — signature, `broad?`, retrieval terms, and per-node structure — before searching (see [Debugging a query](#debugging-a-query)) |
 | `--limit N` | Stop after N matches |
 | `--allow-broad` | Allow patterns like `_` that match everything |
 | `--expand-imports` | Resolve `import Mod` to `Mod`'s real exports, scoped per module, so `map(a, b)` matches `Mod.map(_, _)`. Requires `Mod` to be loadable |
@@ -72,8 +73,97 @@ mix ex_ast.search --count 'dbg(_)' lib/
 # Per-file match counts, most matches first
 mix ex_ast.search 'IO.inspect(_)' lib/ --count-by-file
 
+# See how a pattern parsed before running it
+mix ex_ast.search 'IO.inspect(expr)' lib/ --debug-query
+
 # Resolve a bare `import Enum` to its real exports
 mix ex_ast.search 'Enum.map(_, _)' lib/ --expand-imports
+```
+
+### Debugging a query
+
+A surprising `0 matches` usually means the pattern parsed differently than you
+intended, not that the code isn't there. `--debug-query` prints the parse so you
+can see what actually runs:
+
+```console
+$ mix ex_ast.search 'Enum.map(coll, _)' lib/ --debug-query --count
+pattern:    "Enum.map(coll, _)"
+parsed:     Enum.map(coll, _)
+signature:  {:call, :map, 2}
+multi-node: false
+broad?:     false
+terms:      alias:Enum, atom:Enum, atom:map, call.remote:Enum.map/2
+
+structure:
+  remote call Enum.map, arity 2
+    coll — capture (binds one node under :coll)
+    _ — wildcard (matches anything, not captured)
+
+50
+```
+
+Each header line answers a different "why zero?":
+
+- **`parsed`** — the pattern after normalization (pipes rewritten, blocks
+  unwrapped). If this doesn't look like what you meant, nothing below matters.
+- **`signature`** — the `{:call, name, arity}` key used to prefilter candidate
+  nodes. A wrong arity or name here (often from a missing/extra arg) rules out
+  every node before matching runs.
+- **`broad?`** — whether the pattern matches essentially everything (e.g. `_`).
+  A broad pattern is *refused before it runs* unless you pass `--limit` or
+  `--allow-broad`, so a broad-looking zero is really a refusal.
+- **`terms`** — the high-signal terms used to retrieve candidate files from the
+  index. A file whose terms don't include one of these is never opened, so a
+  term that no file contains (a typo'd module, a struct that doesn't exist)
+  yields zero. `(none …)` means retrieval falls back to the signature alone.
+- **`structure`** — what each node binds to, distinguishing a **capture**
+  (`coll`) from a **wildcard** (`_`), an **ellipsis** from a fixed arg, and a
+  named callee from a wildcard one.
+
+The classic false zero is an aliased module. `lib/ex_ast/index.ex` calls
+`Terms.from_pattern(pattern)`, but ex_ast indexes calls under their resolved
+module, so the short-alias pattern finds none while the fully-qualified one
+finds all four — `terms` shows why, looking for `Terms.from_pattern/1` where no
+file carries it:
+
+```console
+$ mix ex_ast.search 'Terms.from_pattern(_)' lib/ --debug-query --count
+pattern:    "Terms.from_pattern(_)"
+parsed:     Terms.from_pattern(_)
+signature:  {:call, :from_pattern, 1}
+multi-node: false
+broad?:     false
+terms:      alias:Terms, atom:Terms, atom:from_pattern, call.remote:Terms.from_pattern/1
+
+structure:
+  remote call Terms.from_pattern, arity 1
+    _ — wildcard (matches anything, not captured)
+
+0
+$ mix ex_ast.search 'ExAST.Index.Terms.from_pattern(_)' lib/ --count
+4
+```
+
+A bare `_` shows the refusal case — `broad?: true`, and no terms to narrow on:
+
+```console
+$ mix ex_ast.search '_' lib/ --debug-query --count
+pattern:    "_"
+parsed:     _
+signature:  :unknown
+multi-node: false
+broad?:     true
+terms:      (none — retrieval falls back to the signature)
+
+structure:
+  _ — wildcard (matches anything, not captured)
+```
+
+`ExAST.Pattern.explain/1` returns this same text for use outside the CLI:
+
+```elixir
+IO.puts(ExAST.Pattern.explain("Enum.map(coll, _)"))
 ```
 
 ## Multiple patterns

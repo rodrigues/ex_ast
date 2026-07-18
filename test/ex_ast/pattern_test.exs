@@ -977,6 +977,119 @@ defmodule ExAST.PatternTest do
     end
   end
 
+  describe "explain/1" do
+    test "reports signature, captures, wildcards, and callees" do
+      output = Pattern.explain("Enum.map(coll, _)")
+      assert output =~ "signature:  {:call, :map, 2}"
+      assert output =~ "remote call Enum.map, arity 2"
+      assert output =~ "coll — capture"
+      assert output =~ "_ — wildcard"
+    end
+
+    test "describes local calls and attributes" do
+      assert Pattern.explain("foo(a, b)") =~ "local call foo, arity 2"
+      assert Pattern.explain("@attr _") =~ "attribute @attr"
+    end
+
+    test "renders a multi-statement block as a statement sequence, not a wildcard call" do
+      output = Pattern.explain("x = get(_, _); delete(x)")
+
+      assert output =~ "multi-node: true"
+      assert output =~ "sequence of 2 statement(s):"
+      assert output =~ "local call get, arity 2"
+      assert output =~ "local call delete, arity 1"
+      refute output =~ "wildcard local call (any name)"
+    end
+
+    test "renders a module alias by name, not as a wildcard call over segment literals" do
+      output = Pattern.explain("%App.Auth.Context{flag: value}")
+
+      assert output =~ "module App.Auth.Context"
+      assert output =~ "value — capture"
+      refute output =~ "wildcard local call (any name)"
+      refute output =~ "literal :App"
+    end
+
+    test "describes with-expressions, wildcard callees, and repeated captures" do
+      with_out = Pattern.explain("with {:ok, _} <- _ do ... end")
+      assert with_out =~ "local call with, arity 2"
+      assert with_out =~ "local call <-, arity 2"
+      assert with_out =~ "... — ellipsis"
+
+      any_call = Pattern.explain("_._(...)")
+      assert any_call =~ "remote call _ (any)._ (any function), arity any (...)"
+
+      unified = Pattern.explain("fun(x, x)")
+      assert unified =~ "local call fun, arity 2"
+      assert Regex.scan(~r/x — capture/, unified) |> length() == 2
+    end
+
+    test "shows the original pattern and its normalized parse in the header" do
+      output = Pattern.explain("x |> foo() |> bar()")
+
+      assert output =~ "pattern:    \"x |> foo() |> bar()\""
+      assert output =~ "parsed:     bar(foo(x))"
+    end
+
+    test "flags a broad pattern in the header" do
+      assert Pattern.explain("_") =~ "broad?:     true"
+      assert Pattern.explain("Enum.map(coll, _)") =~ "broad?:     false"
+    end
+
+    test "lists the high-signal retrieval terms, hiding low-signal noise" do
+      output = Pattern.explain("Enum.map(coll, _)")
+
+      assert output =~ "terms:      "
+      assert output =~ "call.remote:Enum.map/2"
+      refute output =~ "node:call"
+      refute output =~ "call.arity:2"
+    end
+
+    test "notes when a pattern has no high-signal terms to retrieve on" do
+      assert Pattern.explain("42") =~
+               "terms:      (none — retrieval falls back to the signature)"
+    end
+
+    test "accepts a quoted pattern and matches the string form's output" do
+      from_string = Pattern.explain("IO.inspect(expr)")
+      from_quoted = Pattern.explain(quote(do: IO.inspect(expr)))
+      from_compiled = Pattern.explain(Pattern.compile("IO.inspect(expr)"))
+
+      assert from_quoted =~ "remote call IO.inspect, arity 1"
+      assert from_quoted =~ "expr — capture"
+
+      # Only the `pattern:` header line differs by input form (inspected source
+      # string vs. AST reconstruction); everything below it must be identical.
+      drop_pattern_line = fn text -> text |> String.split("\n", parts: 2) |> List.last() end
+
+      assert drop_pattern_line.(from_quoted) == drop_pattern_line.(from_string)
+      assert drop_pattern_line.(from_compiled) == drop_pattern_line.(from_string)
+    end
+
+    test "renders a def head and its variable-arity body" do
+      output = Pattern.explain("def handle(_, _) do ... end")
+
+      assert output =~ "def definition, head:"
+      assert output =~ "local call handle, arity 2"
+      assert output =~ "... — ellipsis"
+    end
+
+    test "reports variable arity for ellipsis args" do
+      output = Pattern.explain("foo(first, ...)")
+
+      assert output =~ "local call foo, arity any (...)"
+      assert output =~ "first — capture"
+      assert output =~ "... — ellipsis"
+    end
+
+    test "renders a function capture's arity constraint" do
+      output = Pattern.explain("&Enum.map/2")
+
+      assert output =~ "local call &, arity 1"
+      assert output =~ "arity-constrained head: name=Enum.map(), arity=2"
+    end
+  end
+
   describe "substitute/2" do
     test "replaces capture variables in template" do
       captures = %{expr: {:data, nil, nil}}
