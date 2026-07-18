@@ -219,36 +219,56 @@ defmodule ExAST do
     source = File.read!(file)
 
     if ExAST.Prefilter.may_match?(source, pattern) do
-      lines = String.split(source, "\n", trim: false)
-
-      source
-      |> Patcher.find_all(pattern, opts)
-      |> maybe_take(limit)
-      |> Enum.map(fn %{range: range, node: node, captures: captures} ->
-        search_match(file, lines, range, node, captures)
-      end)
+      skip_file_on_error(file, fn -> collect_file_matches(file, source, pattern, opts, limit) end)
     else
       []
     end
+  end
+
+  defp collect_file_matches(file, source, pattern, opts, limit) do
+    lines = String.split(source, "\n", trim: false)
+
+    source
+    |> Patcher.find_all(pattern, opts)
+    |> maybe_take(limit)
+    |> Enum.map(fn %{range: range, node: node, captures: captures} ->
+      search_match(file, lines, range, node, captures)
+    end)
   end
 
   defp search_file_many(file, patterns, opts, limit \\ nil) do
     source = File.read!(file)
 
     if Enum.any?(patterns, fn {_name, pattern} -> ExAST.Prefilter.may_match?(source, pattern) end) do
-      lines = String.split(source, "\n", trim: false)
-
-      source
-      |> Patcher.find_many(patterns, opts)
-      |> maybe_take(limit)
-      |> Enum.map(fn %{pattern: pattern, range: range, node: node, captures: captures} ->
-        file
-        |> search_match(lines, range, node, captures)
-        |> Map.put(:pattern, pattern)
+      skip_file_on_error(file, fn ->
+        collect_file_matches_many(file, source, patterns, opts, limit)
       end)
     else
       []
     end
+  end
+
+  defp collect_file_matches_many(file, source, patterns, opts, limit) do
+    lines = String.split(source, "\n", trim: false)
+
+    source
+    |> Patcher.find_many(patterns, opts)
+    |> maybe_take(limit)
+    |> Enum.map(fn %{pattern: pattern, range: range, node: node, captures: captures} ->
+      file
+      |> search_match(lines, range, node, captures)
+      |> Map.put(:pattern, pattern)
+    end)
+  end
+
+  # A pattern that crashes on one file (e.g. an unusual AST shape) should skip
+  # that file with a warning, never abort the whole run.
+  defp skip_file_on_error(file, fun) do
+    fun.()
+  rescue
+    error ->
+      IO.warn("ex_ast: skipping #{file}: #{Exception.message(error)}", __STACKTRACE__)
+      []
   end
 
   defp search_match(file, lines, range, node, captures) do

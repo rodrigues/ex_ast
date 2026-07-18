@@ -181,6 +181,22 @@ defmodule ExAST.PatternTest do
     end
   end
 
+  describe "map patterns with ellipsis" do
+    test "%{...} matches any map without crashing on call-valued entries" do
+      source = """
+      defmodule M do
+        def perms, do: %{admin: grant(:admin), user: :ok}
+      end
+      """
+
+      assert [%{}] = ExAST.Patcher.find_all(source, "def name do %{...} end")
+    end
+
+    test "%{...} matches an empty map" do
+      assert [%{}] = ExAST.Patcher.find_all("x = %{}", "%{...}")
+    end
+  end
+
   describe "pipes" do
     test "pipe into function" do
       assert {:ok, %{}} = match!("data |> Enum.map(fun)", "_ |> Enum.map(_)")

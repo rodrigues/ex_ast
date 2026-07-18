@@ -925,8 +925,12 @@ defmodule ExAST.Pattern do
 
   # --- Subset matching for structs/maps ---
 
+  # `...` inside a map/struct pattern imposes no constraint (maps already match
+  # partially); skip it so `%{...}` matches any map instead of crashing.
   defp match_subset(source_kvs, pattern_kvs, caps) do
-    Enum.reduce_while(pattern_kvs, {:ok, caps}, fn {pkey, pval}, {:ok, caps} ->
+    pattern_kvs
+    |> Enum.reject(&ellipsis?/1)
+    |> Enum.reduce_while({:ok, caps}, fn {pkey, pval}, {:ok, caps} ->
       source_kvs
       |> find_value_by_key(pkey)
       |> match_kv_value(pval, caps)

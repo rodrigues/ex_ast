@@ -260,6 +260,23 @@ defmodule Mix.Tasks.ExAst.SearchTest do
       assert %{"count" => 1, "matches" => [%{"captures" => %{"expr" => "value"}}]} =
                Jason.decode!(output)
     end
+
+    @tag :tmp_dir
+    test "a map pattern with ... does not abort the run", %{tmp_dir: dir} do
+      file = Path.join(dir, "sample.ex")
+
+      File.write!(
+        file,
+        "defmodule M do\n  def perms, do: %{admin: grant(:admin), user: :ok}\nend\n"
+      )
+
+      output =
+        capture_io(fn ->
+          Mix.Task.run("ex_ast.search", ["def name do %{...} end", file])
+        end)
+
+      assert output =~ "1 match(es)"
+    end
   end
 
   @tag :tmp_dir
