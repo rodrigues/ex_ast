@@ -160,10 +160,52 @@ structure:
   _ — wildcard (matches anything, not captured)
 ```
 
-`ExAST.Pattern.explain/1` returns this same text for use outside the CLI:
+Special forms are rendered as themselves rather than as raw calls, so
+`case`/`cond`/`with`/`for`, anonymous functions, `->` clauses, comprehension and
+`do`/`else` blocks, operators, bitstrings, sigils, and ranges read the way you
+wrote them. The `signature` line still shows the internal `{:call, ...}` key
+these match under, annotated so it isn't mistaken for an ordinary function call:
+
+```console
+$ mix ex_ast.search 'case x do _ -> _ end' lib/ --debug-query --count
+signature:  {:call, :case, 2}  (case is a special form, matched structurally as a call)
+...
+structure:
+  case expression
+    x — capture (binds one node under :x)
+    do:
+      clause (1 head arg(s)) ->
+        _ — wildcard (matches anything, not captured)
+        _ — wildcard (matches anything, not captured)
+```
+
+Some pattern shapes can't be matched at all — notably the map-update form
+`%{map | k: v}`. `--debug-query` flags these up front and skips the search
+instead of raising mid-run:
+
+```console
+$ mix ex_ast.search '%{map | key: value}' lib/ --debug-query --count
+...
+unsupported: this pattern's shape crashes the matcher — `mix ex_ast.search`
+             will raise instead of returning matches (e.g. the map-update
+             form `%{map | k: v}` is not supported for matching).
+
+structure:
+  map %{}, 1 entry(ies)
+    operator |
+      map — capture (binds one node under :map)
+      pair:
+        literal :key
+        value — capture (binds one node under :value)
+Skipping search — pattern is unsupported (see above).
+```
+
+`ExAST.Pattern.explain/1` returns this same text for use outside the CLI, and
+`ExAST.Pattern.matchable?/1` reports whether a pattern's shape can be matched:
 
 ```elixir
 IO.puts(ExAST.Pattern.explain("Enum.map(coll, _)"))
+ExAST.Pattern.matchable?("%{map | k: v}")  #=> false
 ```
 
 ## Multiple patterns

@@ -307,6 +307,21 @@ defmodule Mix.Tasks.ExAst.SearchTest do
 
       assert output =~ "broad?:     true"
     end
+
+    @tag :tmp_dir
+    test "--debug-query flags an unsupported pattern and skips the doomed search",
+         %{tmp_dir: dir} do
+      file = Path.join(dir, "sample.ex")
+      File.write!(file, "IO.inspect(value)\n")
+
+      output =
+        capture_io(fn ->
+          Mix.Task.run("ex_ast.search", ["%{m | k: v}", file, "--debug-query", "--count"])
+        end)
+
+      assert output =~ "unsupported: this pattern's shape crashes the matcher"
+      assert output =~ "Skipping search — pattern is unsupported"
+    end
   end
 
   @tag :tmp_dir

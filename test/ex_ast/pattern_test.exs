@@ -1010,11 +1010,13 @@ defmodule ExAST.PatternTest do
       refute output =~ "literal :App"
     end
 
-    test "describes with-expressions, wildcard callees, and repeated captures" do
+    test "renders special forms as themselves, not as opaque local calls" do
       with_out = Pattern.explain("with {:ok, _} <- _ do ... end")
-      assert with_out =~ "local call with, arity 2"
-      assert with_out =~ "local call <-, arity 2"
+      assert with_out =~ "with expression"
+      assert with_out =~ "operator <-"
+      assert with_out =~ "do:"
       assert with_out =~ "... — ellipsis"
+      refute with_out =~ "local call with"
 
       any_call = Pattern.explain("_._(...)")
       assert any_call =~ "remote call _ (any)._ (any function), arity any (...)"
@@ -1022,6 +1024,13 @@ defmodule ExAST.PatternTest do
       unified = Pattern.explain("fun(x, x)")
       assert unified =~ "local call fun, arity 2"
       assert Regex.scan(~r/x — capture/, unified) |> length() == 2
+    end
+
+    test "notes in the signature when a special form is matched structurally as a call" do
+      assert Pattern.explain("case x do _ -> _ end") =~
+               "signature:  {:call, :case, 2}  (case is a special form"
+
+      assert Pattern.explain("fn x -> x end") =~ "anonymous function fn, 1 clause(s)"
     end
 
     test "shows the original pattern and its normalized parse in the header" do
@@ -1085,8 +1094,23 @@ defmodule ExAST.PatternTest do
     test "renders a function capture's arity constraint" do
       output = Pattern.explain("&Enum.map/2")
 
-      assert output =~ "local call &, arity 1"
+      assert output =~ "function capture &"
       assert output =~ "arity-constrained head: name=Enum.map(), arity=2"
+    end
+
+    test "flags a pattern shape the matcher can't handle" do
+      output = Pattern.explain("%{map | key: value}")
+
+      assert output =~ "unsupported: this pattern's shape crashes the matcher"
+      refute Pattern.explain("Enum.map(coll, _)") =~ "unsupported:"
+    end
+
+    test "renders access, bitstrings, sigils, and ranges legibly" do
+      assert Pattern.explain("a[b]") =~ "remote call Access.get, arity 2"
+      assert Pattern.explain("<<a::binary>>") =~ "bitstring <<>>, 1 segment(s)"
+      assert Pattern.explain("~r/foo/") =~ ~s(sigil ~r "foo")
+      assert Pattern.explain("1..10") =~ "range .."
+      assert Pattern.explain("a + b * c") =~ "operator +"
     end
   end
 

@@ -324,26 +324,26 @@ defmodule Mix.Tasks.ExAst.Search do
       ])
       |> Keyword.merge(Keyword.take(opts, [:limit, :allow_broad, :expand_imports]))
 
-    maybe_debug_query(pattern, opts)
+    if maybe_debug_query(pattern, opts) do
+      results = ExAST.search(paths, search_pattern, search_opts)
 
-    results = ExAST.search(paths, search_pattern, search_opts)
+      Output.with_stdout(fn ->
+        cond do
+          json?(opts) ->
+            JSON.print(%{matches: results, count: length(results)})
 
-    Output.with_stdout(fn ->
-      cond do
-        json?(opts) ->
-          JSON.print(%{matches: results, count: length(results)})
+          opts[:count_by_file] ->
+            print_count_by_file(results)
 
-        opts[:count_by_file] ->
-          print_count_by_file(results)
+          opts[:count] ->
+            Output.puts(length(results))
 
-        opts[:count] ->
-          Output.puts(length(results))
-
-        true ->
-          Enum.each(results, &print_match/1)
-          Output.puts("\n#{length(results)} match(es)")
-      end
-    end)
+          true ->
+            Enum.each(results, &print_match/1)
+            Output.puts("\n#{length(results)} match(es)")
+        end
+      end)
+    end
   end
 
   defp validate_pattern!(pattern) do
@@ -365,10 +365,17 @@ defmodule Mix.Tasks.ExAst.Search do
 
   defp maybe_debug_query(pattern, opts) do
     if opts[:debug_query] do
+      matchable? = ExAST.Pattern.matchable?(pattern)
+
       Output.with_stdout(fn ->
         Output.puts(ExAST.Pattern.explain(pattern))
+        unless matchable?, do: Output.puts("Skipping search — pattern is unsupported (see above).")
         Output.puts("")
       end)
+
+      matchable?
+    else
+      true
     end
   end
 

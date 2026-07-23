@@ -134,15 +134,55 @@ defmodule ExAST.Pattern do
     header = [
       "pattern:    #{format_original(pattern)}",
       "parsed:     #{safe_to_string(compiled.ast)}",
-      "signature:  #{inspect(compiled.signature)}",
+      "signature:  #{format_signature(compiled.signature)}",
       "multi-node: #{compiled.multi_node?}",
       "broad?:     #{compiled.broad?}",
-      "terms:      #{format_terms(compiled.terms)}",
-      "",
-      "structure:"
+      "terms:      #{format_terms(compiled.terms)}"
     ]
 
-    Enum.join(header ++ describe(compiled.ast, 1), "\n")
+    sections = header ++ matchability_lines(compiled) ++ ["", "structure:"]
+
+    Enum.join(sections ++ describe(compiled.ast, 1), "\n")
+  end
+
+  @signature_note_forms [:fn, :case, :cond, :with, :for, :try, :receive, :if, :unless, :defmodule]
+
+  defp format_signature({:call, name, _arity} = signature) when name in @signature_note_forms,
+    do: "#{inspect(signature)}  (#{name} is a special form, matched structurally as a call)"
+
+  defp format_signature(signature), do: inspect(signature)
+
+  # `--debug-query`'s job is to vet a pattern before searching, so a pattern
+  # whose *shape* makes the matcher raise (rather than return `:error`) must be
+  # flagged here instead of surfacing as a raw stacktrace mid-search. Probing
+  # the pattern against itself exercises the matching clauses without a corpus.
+  defp matchability_lines(compiled) do
+    if matchable_ast?(compiled.ast) do
+      []
+    else
+      [
+        "",
+        "unsupported: this pattern's shape crashes the matcher — `mix ex_ast.search`",
+        "             will raise instead of returning matches (e.g. the map-update",
+        "             form `%{map | k: v}` is not supported for matching)."
+      ]
+    end
+  end
+
+  @doc """
+  Returns `false` when a pattern's shape makes the matcher raise rather than
+  return a normal `:error` (e.g. the unsupported map-update form `%{m | k: v}`).
+
+  Lets callers refuse a pattern up front instead of crashing mid-search.
+  """
+  @spec matchable?(pattern()) :: boolean()
+  def matchable?(pattern), do: pattern |> compile() |> Map.fetch!(:ast) |> matchable_ast?()
+
+  defp matchable_ast?(ast) do
+    match_normalized(ast, ast)
+    true
+  rescue
+    _ -> false
   end
 
   # High-signal terms only: the discriminating ones that drive candidate
@@ -168,6 +208,13 @@ defmodule ExAST.Pattern do
     _ -> inspect(ast)
   end
 
+  @block_forms [:case, :cond, :with, :for, :try, :receive, :if, :unless, :defmodule]
+
+  @operators [
+    :+, :-, :*, :++, :--, :<>, :and, :or, :&&, :||, :==, :!=, :===, :!==,
+    :<, :>, :<=, :>=, :=~, :=, :in, :not, :!, :^, :|, :<-, :when, :"::"
+  ]
+
   defp describe(_ast, depth) when depth > 6, do: [indent(depth) <> "…"]
 
   defp describe({:_, nil, nil}, depth),
@@ -191,7 +238,7 @@ defmodule ExAST.Pattern do
   defp describe({form, nil, [head | rest]}, depth)
        when form in [:def, :defp, :defmacro, :defmacrop] do
     [indent(depth) <> "#{form} definition, head:"] ++
-      describe(head, depth + 1) ++ Enum.flat_map(rest, &describe(&1, depth + 1))
+      describe(head, depth + 1) ++ Enum.flat_map(rest, &describe_definition_rest(&1, depth + 1))
   end
 
   defp describe({:/, nil, [name, arity]}, depth) do
@@ -218,13 +265,65 @@ defmodule ExAST.Pattern do
     [indent(depth) <> "module #{Enum.map_join(parts, ".", &alias_part/1)}"]
   end
 
-  defp describe({name, nil, args}, depth) when is_atom(name) and is_list(args) do
-    label =
-      if wildcard_name?(name),
-        do: "wildcard local call (any name)",
-        else: "local call #{name}"
+  defp describe({:%, nil, [name, {:%{}, nil, kvs}]}, depth) when is_list(kvs) do
+    [indent(depth) <> "struct:"] ++ describe(name, depth + 1) ++ describe_kvs(kvs, depth + 1)
+  end
 
-    [indent(depth) <> "#{label}, arity #{arity_text(args)}"] ++ describe(args, depth + 1)
+  defp describe({:%{}, nil, kvs}, depth) when is_list(kvs) do
+    [indent(depth) <> "map %{}, #{length(kvs)} entry(ies)"] ++ describe_kvs(kvs, depth + 1)
+  end
+
+  defp describe({:<<>>, nil, segments}, depth) when is_list(segments) do
+    [indent(depth) <> "bitstring <<>>, #{length(segments)} segment(s)"] ++
+      describe(segments, depth + 1)
+  end
+
+  defp describe({:fn, nil, clauses}, depth) when is_list(clauses) do
+    [indent(depth) <> "anonymous function fn, #{length(clauses)} clause(s)"] ++
+      Enum.flat_map(clauses, &describe(&1, depth + 1))
+  end
+
+  defp describe({:->, nil, [args, body]}, depth) when is_list(args) do
+    [indent(depth) <> "clause (#{arity_text(args)} head arg(s)) ->"] ++
+      describe(args, depth + 1) ++ describe(body, depth + 1)
+  end
+
+  defp describe({:&, nil, [n]}, depth) when is_integer(n),
+    do: [indent(depth) <> "&#{n} — capture argument"]
+
+  defp describe({:&, nil, [arg]}, depth),
+    do: [indent(depth) <> "function capture &"] ++ describe(arg, depth + 1)
+
+  defp describe({form, nil, args}, depth) when form in @block_forms and is_list(args) do
+    {positional, blocks} = split_blocks(args)
+
+    [indent(depth) <> "#{form} expression"] ++
+      Enum.flat_map(positional, &describe(&1, depth + 1)) ++
+      Enum.flat_map(blocks, &describe_kv(&1, depth + 1))
+  end
+
+  defp describe({op, nil, args}, depth) when op in [:.., :"..//"] and is_list(args) do
+    [indent(depth) <> "range #{op}"] ++ describe(args, depth + 1)
+  end
+
+  defp describe({op, nil, args}, depth) when op in @operators and is_list(args) do
+    kind = if length(args) == 1, do: "unary operator", else: "operator"
+    [indent(depth) <> "#{kind} #{op}"] ++ describe(args, depth + 1)
+  end
+
+  defp describe({name, nil, args}, depth) when is_atom(name) and is_list(args) do
+    cond do
+      sigil_name?(name) ->
+        [indent(depth) <> "sigil ~#{sigil_letter(name)}#{sigil_suffix(args)}"]
+
+      wildcard_name?(name) ->
+        [indent(depth) <> "wildcard local call (any name), arity #{arity_text(args)}"] ++
+          describe(args, depth + 1)
+
+      true ->
+        [indent(depth) <> "local call #{name}, arity #{arity_text(args)}"] ++
+          describe(args, depth + 1)
+    end
   end
 
   defp describe({left, right}, depth) do
@@ -241,7 +340,14 @@ defmodule ExAST.Pattern do
   end
 
   defp describe_inline(int) when is_integer(int), do: Integer.to_string(int)
-  defp describe_inline(atom) when is_atom(atom), do: Atom.to_string(atom)
+
+  defp describe_inline(atom) when is_atom(atom) do
+    case Atom.to_string(atom) do
+      "Elixir." <> rest -> rest
+      other -> other
+    end
+  end
+
   defp describe_inline(other), do: safe_to_string(other)
 
   defp describe_callee(:_), do: "_ (any function)"
@@ -256,6 +362,44 @@ defmodule ExAST.Pattern do
   end
 
   defp indent(depth), do: String.duplicate("  ", depth)
+
+  defp describe_kvs(kvs, depth), do: Enum.flat_map(kvs, &describe_kv(&1, depth))
+
+  defp describe_kv({key, value}, depth) when is_atom(key),
+    do: [indent(depth) <> "#{key}:"] ++ describe(value, depth + 1)
+
+  defp describe_kv(other, depth), do: describe(other, depth)
+
+  defp describe_definition_rest(kw, depth) when is_list(kw), do: describe_kvs(kw, depth)
+  defp describe_definition_rest(other, depth), do: describe(other, depth)
+
+  defp split_blocks(args) do
+    case List.last(args) do
+      [_ | _] = kw ->
+        if Enum.all?(kw, &block_pair?/1), do: {Enum.drop(args, -1), kw}, else: {args, []}
+
+      _ ->
+        {args, []}
+    end
+  end
+
+  defp block_pair?({key, _value})
+       when key in [:do, :else, :after, :rescue, :catch, :into, :uniq, :reduce],
+       do: true
+
+  defp block_pair?(_other), do: false
+
+  defp sigil_name?(name) when is_atom(name), do: match?("sigil_" <> _, Atom.to_string(name))
+
+  defp sigil_letter(name) do
+    "sigil_" <> letter = Atom.to_string(name)
+    letter
+  end
+
+  defp sigil_suffix([{:<<>>, nil, [content]}, _mods]) when is_binary(content),
+    do: " #{inspect(content)}"
+
+  defp sigil_suffix(_args), do: ""
 
   @doc false
   @spec match_compiled(Macro.t(), ExAST.CompiledPattern.t() | Macro.t(), %{
