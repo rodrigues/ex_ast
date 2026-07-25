@@ -1045,6 +1045,17 @@ defmodule ExAST.PatternTest do
       assert Pattern.explain("Enum.map(data, _)") =~ "broad?:     false"
     end
 
+    test "flags a bare ellipsis as broad, since it matches every node" do
+      assert Pattern.explain("...") =~ "broad?:     true"
+      assert Pattern.explain("[...]") =~ "broad?:     true"
+    end
+
+    test "leaves shape-constrained catch-alls non-broad" do
+      assert Pattern.explain("_(...)") =~ "broad?:     false"
+      assert Pattern.explain("%{...}") =~ "broad?:     false"
+      assert Pattern.explain("[_, x]") =~ "broad?:     false"
+    end
+
     test "lists the high-signal retrieval terms, hiding low-signal noise" do
       output = Pattern.explain("Enum.map(data, _)")
 
@@ -1111,6 +1122,60 @@ defmodule ExAST.PatternTest do
       assert Pattern.explain("~r/foo/") =~ ~s(sigil ~r "foo")
       assert Pattern.explain("1..10") =~ "range .."
       assert Pattern.explain("a + b * c") =~ "operator +"
+    end
+
+    test "renders tuples as tuples, not as calls to {}" do
+      pair = Pattern.explain("{a, b}")
+      triple = Pattern.explain("{a, b, c}")
+
+      assert pair =~ "tuple {}, 2 element(s)"
+      assert triple =~ "tuple {}, 3 element(s)"
+      refute pair =~ "local call {}"
+      refute triple =~ "local call {}"
+    end
+
+    test "renders a list node with its own header, distinct from a bare ellipsis" do
+      list = Pattern.explain("[a, b]")
+
+      assert list =~ "list [], 2 element(s)"
+      assert list =~ "a — capture"
+      assert Pattern.explain("[...]") =~ "list [], 1 element(s)"
+      refute Pattern.explain("...") =~ "list []"
+    end
+
+    test "keeps call arguments unwrapped, so args are not reported as a list" do
+      output = Pattern.explain("foo(a, b)")
+
+      assert output =~ "local call foo, arity 2"
+      refute output =~ "list []"
+    end
+
+    test "keeps clause lists unwrapped under a do block" do
+      output = Pattern.explain("case x do _ -> _ end")
+
+      assert output =~ "do:"
+      assert output =~ "clause (1 head arg(s)) ->"
+      refute output =~ "list []"
+    end
+
+    test "still reports a list body inside a do block as a list" do
+      assert Pattern.explain("def f do [a, b] end") =~ "list [], 2 element(s)"
+    end
+
+    test "names a bitstring segment's type instead of capturing it" do
+      typed = Pattern.explain("<<x::binary>>")
+      sized = Pattern.explain("<<x::8>>")
+
+      assert typed =~ "segment, type binary"
+      assert typed =~ "x — capture"
+      refute typed =~ "binary — capture"
+      assert sized =~ "segment, type 8"
+    end
+
+    test "says the structure was truncated at the depth limit" do
+      output = Pattern.explain("f(g(h(i(j(k(l(m)))))))")
+
+      assert output =~ "… (deeper nodes not shown)"
     end
   end
 

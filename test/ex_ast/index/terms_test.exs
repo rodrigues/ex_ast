@@ -148,6 +148,28 @@ defmodule ExAST.Index.TermsTest do
       refute MapSet.member?(terms, "call.local.same_args:|>/2")
     end
 
+    test "does not infer same-argument terms from repeated wildcards" do
+      wildcards = Terms.from_pattern(quote(do: f(_, _)))
+      named_wildcards = Terms.from_pattern(quote(do: f(_a, _a)))
+      captures = Terms.from_pattern(quote(do: f(x, x)))
+
+      refute MapSet.member?(wildcards, "call.local.same_args:f/2")
+      refute MapSet.member?(named_wildcards, "call.local.same_args:f/2")
+      assert MapSet.member?(captures, "call.local.same_args:f/2")
+    end
+
+    test "does not infer same-argument terms from arguments containing a wildcard" do
+      terms = Terms.from_pattern(quote(do: f(g(_), g(_))))
+
+      refute MapSet.member?(terms, "call.local.same_args:f/2")
+    end
+
+    test "keeps same-argument terms for syntactically identical source arguments" do
+      terms = Terms.from_source("f(_, _)")
+
+      assert MapSet.member?(terms, "call.local.same_args:f/2")
+    end
+
     test "indexes boolean, nil, and small integer literals in patterns" do
       terms =
         quote do

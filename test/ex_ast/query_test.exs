@@ -79,6 +79,27 @@ defmodule ExAST.QueryTest do
     end
   end
 
+  test "public search refuses an unbounded ellipsis query" do
+    tmp_dir =
+      System.tmp_dir!()
+      |> Path.join("ex_ast_broad_ellipsis_#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(tmp_dir)
+    on_exit(fn -> File.rm_rf!(tmp_dir) end)
+
+    File.write!(Path.join(tmp_dir, "a.ex"), "defmodule A do\n  def run, do: :ok\nend\n")
+
+    assert_raise ArgumentError, ~r/refusing broad query/, fn ->
+      ExAST.search(tmp_dir, from("..."))
+    end
+
+    assert_raise ArgumentError, ~r/refusing broad query/, fn ->
+      ExAST.search(tmp_dir, "...")
+    end
+
+    assert ExAST.search(tmp_dir, "...", limit: 2) |> length() == 2
+  end
+
   test "public search allows broad queries with a limit and stops across files" do
     tmp_dir =
       System.tmp_dir!()

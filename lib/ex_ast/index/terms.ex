@@ -217,7 +217,7 @@ defmodule ExAST.Index.Terms do
          "call.function:#{name}",
          "call.arity:#{arity}"
          | source_pipe_equivalent_local_terms(mode, name, arity) ++
-             arg_literal_terms(local, args, same_arg_terms(name, args, terms))
+             arg_literal_terms(local, args, same_arg_terms(name, args, terms, mode))
        ]}
     end
   end
@@ -384,17 +384,47 @@ defmodule ExAST.Index.Terms do
 
   defp source_pipe_equivalent_local_terms(_mode, _name, _arity), do: []
 
-  defp same_arg_terms("|>", _args, terms), do: terms
+  defp same_arg_terms("|>", _args, terms, _mode), do: terms
 
-  defp same_arg_terms(name, [left, right], terms) do
-    if normalized(left) == normalized(right) do
+  defp same_arg_terms(name, [left, right], terms, mode) do
+    if normalized(left) == normalized(right) and not unbound_args?([left, right], mode) do
       ["call.local.same_args:#{name}/2" | terms]
     else
       terms
     end
   end
 
-  defp same_arg_terms(_name, _args, terms), do: terms
+  defp same_arg_terms(_name, _args, terms, _mode), do: terms
+
+  # Two wildcards are structurally identical but match independently, so a
+  # pattern like `f(_, _)` must not require a source call with equal arguments.
+  # In source mode the args are literal code, where identical text does mean
+  # identical arguments.
+  defp unbound_args?(args, :pattern), do: Enum.any?(args, &contains_wildcard?/1)
+  defp unbound_args?(_args, _mode), do: false
+
+  defp contains_wildcard?(ast) do
+    {_ast, found?} =
+      Macro.prewalk(ast, false, fn
+        {name, _meta, context} = node, found when is_atom(name) and is_atom(context) ->
+          {node, found or wildcard_name?(name)}
+
+        {:..., _meta, _args} = node, _found ->
+          {node, true}
+
+        node, found ->
+          {node, found}
+      end)
+
+    found?
+  end
+
+  defp wildcard_name?(name) do
+    case Atom.to_string(name) do
+      "_" <> _ -> true
+      _ -> false
+    end
+  end
 
   defp normalized(ast) do
     Macro.prewalk(ast, fn

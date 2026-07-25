@@ -110,16 +110,18 @@ Each header line answers a different "why zero?":
 - **`signature`** — the `{:call, name, arity}` key used to prefilter candidate
   nodes. A wrong arity or name here (often from a missing/extra arg) rules out
   every node before matching runs.
-- **`broad?`** — whether the pattern matches essentially everything (e.g. `_`).
-  A broad pattern is *refused before it runs* unless you pass `--limit` or
-  `--allow-broad`, so a broad-looking zero is really a refusal.
+- **`broad?`** — whether the pattern matches essentially everything (`_`, `...`,
+  `[...]`). A broad pattern is *refused before it runs* unless you pass `--limit`
+  or `--allow-broad`, so a broad-looking zero is really a refusal.
 - **`terms`** — the high-signal terms used to retrieve candidate files from the
   index. A file whose terms don't include one of these is never opened, so a
   term that no file contains (a typo'd module, a struct that doesn't exist)
   yields zero. `(none …)` means retrieval falls back to the signature alone.
 - **`structure`** — what each node binds to, distinguishing a **capture**
-  (`data`) from a **wildcard** (`_`), an **ellipsis** from a fixed arg, and a
-  named callee from a wildcard one.
+  (`data`) from a **wildcard** (`_`), an **ellipsis** from a fixed arg, a
+  bitstring segment's type from a bound name, and a named callee from a wildcard
+  one. Nesting deeper than six levels is elided with `… (deeper nodes not
+  shown)`.
 
 The classic false zero is an aliased module. `lib/ex_ast/index.ex` calls
 `Terms.from_pattern(pattern)`, but ex_ast indexes calls under their resolved

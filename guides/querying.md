@@ -181,8 +181,9 @@ For candidate indexing and code intelligence metadata, see
 
 ## Broad queries
 
-`from("_")` matches every AST node. Project-wide searches refuse those
-unless you pass a `limit` or opt in explicitly:
+`from("_")` matches every AST node, as do `from("...")` and `from("[...]")`.
+Project-wide searches refuse those unless you pass a `limit` or opt in
+explicitly:
 
 ```elixir
 ExAST.search("lib/", from("_"), limit: 100)

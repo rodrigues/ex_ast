@@ -102,7 +102,7 @@ defmodule ExAST.Pattern do
       signature: candidate_signature(ast),
       terms: Terms.from_pattern(pattern),
       multi_node?: multi_node?(pattern),
-      broad?: broad?(ast)
+      broad?: broad_ast?(ast)
     )
   end
 
@@ -178,6 +178,16 @@ defmodule ExAST.Pattern do
   @spec matchable?(pattern()) :: boolean()
   def matchable?(pattern), do: pattern |> compile() |> Map.fetch!(:ast) |> matchable_ast?()
 
+  @doc """
+  Returns `true` when a pattern matches essentially every node it is tried
+  against, such as `_`, `...`, or `[...]`.
+
+  Callers that walk whole codebases use this to refuse an unbounded search, and
+  `--debug-query` reports it as `broad?`.
+  """
+  @spec broad?(pattern() | ExAST.CompiledPattern.t()) :: boolean()
+  def broad?(pattern), do: pattern |> compile() |> Map.fetch!(:broad?)
+
   defp matchable_ast?(ast) do
     match_normalized(ast, ast)
     true
@@ -215,7 +225,8 @@ defmodule ExAST.Pattern do
     :<, :>, :<=, :>=, :=~, :=, :in, :not, :!, :^, :|, :<-, :when, :"::"
   ]
 
-  defp describe(_ast, depth) when depth > 6, do: [indent(depth) <> "…"]
+  defp describe(_ast, depth) when depth > 6,
+    do: [indent(depth) <> "… (deeper nodes not shown)"]
 
   defp describe({:_, nil, nil}, depth),
     do: [indent(depth) <> "_ — wildcard (matches anything, not captured)"]
@@ -232,7 +243,7 @@ defmodule ExAST.Pattern do
   end
 
   defp describe({:@, nil, [{name, nil, args}]}, depth) do
-    [indent(depth) <> "attribute @#{describe_inline(name)}" | describe(args || [], depth + 1)]
+    [indent(depth) <> "attribute @#{describe_inline(name)}" | describe_each(args || [], depth + 1)]
   end
 
   defp describe({form, nil, [head | rest]}, depth)
@@ -253,7 +264,7 @@ defmodule ExAST.Pattern do
       indent(depth) <>
         "remote call #{describe_inline(target)}.#{describe_callee(fun)}, arity #{arity_text(args)}"
     ] ++
-      describe(args, depth + 1)
+      describe_each(args, depth + 1)
   end
 
   defp describe({:__block__, nil, args}, depth) when is_list(args) do
@@ -273,9 +284,14 @@ defmodule ExAST.Pattern do
     [indent(depth) <> "map %{}, #{length(kvs)} entry(ies)"] ++ describe_kvs(kvs, depth + 1)
   end
 
+  defp describe({:{}, nil, elements}, depth) when is_list(elements) do
+    [indent(depth) <> "tuple {}, #{length(elements)} element(s)"] ++
+      describe_each(elements, depth + 1)
+  end
+
   defp describe({:<<>>, nil, segments}, depth) when is_list(segments) do
     [indent(depth) <> "bitstring <<>>, #{length(segments)} segment(s)"] ++
-      describe(segments, depth + 1)
+      Enum.flat_map(segments, &describe_segment(&1, depth + 1))
   end
 
   defp describe({:fn, nil, clauses}, depth) when is_list(clauses) do
@@ -285,7 +301,7 @@ defmodule ExAST.Pattern do
 
   defp describe({:->, nil, [args, body]}, depth) when is_list(args) do
     [indent(depth) <> "clause (#{arity_text(args)} head arg(s)) ->"] ++
-      describe(args, depth + 1) ++ describe(body, depth + 1)
+      describe_each(args, depth + 1) ++ describe(body, depth + 1)
   end
 
   defp describe({:&, nil, [n]}, depth) when is_integer(n),
@@ -303,12 +319,12 @@ defmodule ExAST.Pattern do
   end
 
   defp describe({op, nil, args}, depth) when op in [:.., :"..//"] and is_list(args) do
-    [indent(depth) <> "range #{op}"] ++ describe(args, depth + 1)
+    [indent(depth) <> "range #{op}"] ++ describe_each(args, depth + 1)
   end
 
   defp describe({op, nil, args}, depth) when op in @operators and is_list(args) do
     kind = if length(args) == 1, do: "unary operator", else: "operator"
-    [indent(depth) <> "#{kind} #{op}"] ++ describe(args, depth + 1)
+    [indent(depth) <> "#{kind} #{op}"] ++ describe_each(args, depth + 1)
   end
 
   defp describe({name, nil, args}, depth) when is_atom(name) and is_list(args) do
@@ -318,11 +334,11 @@ defmodule ExAST.Pattern do
 
       wildcard_name?(name) ->
         [indent(depth) <> "wildcard local call (any name), arity #{arity_text(args)}"] ++
-          describe(args, depth + 1)
+          describe_each(args, depth + 1)
 
       true ->
         [indent(depth) <> "local call #{name}, arity #{arity_text(args)}"] ++
-          describe(args, depth + 1)
+          describe_each(args, depth + 1)
     end
   end
 
@@ -330,8 +346,25 @@ defmodule ExAST.Pattern do
     [indent(depth) <> "pair:"] ++ describe(left, depth + 1) ++ describe(right, depth + 1)
   end
 
-  defp describe(list, depth) when is_list(list), do: Enum.flat_map(list, &describe(&1, depth))
+  defp describe(list, depth) when is_list(list) do
+    [indent(depth) <> "list [], #{length(list)} element(s)"] ++ describe_each(list, depth + 1)
+  end
+
   defp describe(other, depth), do: [indent(depth) <> "literal #{inspect(other)}"]
+
+  # Argument, operand, and segment collections are part of their parent node, not
+  # list nodes in their own right — only a genuine list pattern gets a header.
+  defp describe_each(nodes, depth) when is_list(nodes),
+    do: Enum.flat_map(nodes, &describe(&1, depth))
+
+  # In `<<x::binary>>` the right side of `::` is a type specifier, not a
+  # metavariable, so reporting it as a capture would invite reading `binary` as a
+  # bound name.
+  defp describe_segment({:"::", nil, [value, spec]}, depth) do
+    [indent(depth) <> "segment, type #{safe_to_string(spec)}"] ++ describe(value, depth + 1)
+  end
+
+  defp describe_segment(node, depth), do: describe(node, depth)
 
   defp describe_inline({:_, nil, nil}), do: "_ (any)"
 
@@ -366,9 +399,15 @@ defmodule ExAST.Pattern do
   defp describe_kvs(kvs, depth), do: Enum.flat_map(kvs, &describe_kv(&1, depth))
 
   defp describe_kv({key, value}, depth) when is_atom(key),
-    do: [indent(depth) <> "#{key}:"] ++ describe(value, depth + 1)
+    do: [indent(depth) <> "#{key}:"] ++ describe_body(value, depth + 1)
 
   defp describe_kv(other, depth), do: describe(other, depth)
+
+  # A `do:` block holding `->` clauses is a clause list, not a list pattern.
+  defp describe_body([{:->, _meta, _args} | _] = clauses, depth),
+    do: describe_each(clauses, depth)
+
+  defp describe_body(node, depth), do: describe(node, depth)
 
   defp describe_definition_rest(kw, depth) when is_list(kw), do: describe_kvs(kw, depth)
   defp describe_definition_rest(other, depth), do: describe(other, depth)
@@ -938,12 +977,18 @@ defmodule ExAST.Pattern do
 
   # --- Candidate prefiltering ---
 
-  defp broad?({:_, _meta, nil}), do: true
+  defp broad_ast?({:_, _meta, nil}), do: true
 
-  defp broad?({:__ex_ast_any_patterns__, patterns}) when is_list(patterns),
-    do: Enum.any?(patterns, &broad?/1)
+  # A bare `...` matches every node, and `[...]` matches every list, so both need
+  # the same guard as `_`. Other lists are shape-constrained: `[_, x]` still
+  # requires a two-element list.
+  defp broad_ast?({:..., _meta, _args}), do: true
+  defp broad_ast?([{:..., _meta, _args}]), do: true
 
-  defp broad?(_pattern), do: false
+  defp broad_ast?({:__ex_ast_any_patterns__, patterns}) when is_list(patterns),
+    do: Enum.any?(patterns, &broad_ast?/1)
+
+  defp broad_ast?(_pattern), do: false
 
   defp signature({{:., nil, [_target, name]}, nil, args}) when is_atom(name) and is_list(args),
     do: {:call, name, arity_signature(args)}

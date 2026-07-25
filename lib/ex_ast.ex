@@ -269,23 +269,23 @@ defmodule ExAST do
       raise ArgumentError, """
       refusing broad query without a limit
 
-      from("_") matches every AST node and can be very expensive across files.
+      Patterns like `_`, `...`, and `[...]` match every AST node and can be very
+      expensive across files.
       Use a narrower pattern, pass limit: 100, or pass allow_broad: true.
       """
     end
   end
 
-  defp broad_pattern?("_"), do: true
-  defp broad_pattern?({:_, _meta, nil}), do: true
-
   defp broad_pattern?(%ExAST.Selector{steps: [{:self, pattern} | _]}),
     do: broad_pattern?(pattern)
+
+  defp broad_pattern?(%ExAST.Selector{}), do: false
 
   defp broad_pattern?({:__ex_ast_any_patterns__, patterns}),
     do: Enum.any?(patterns, &broad_pattern?/1)
 
   defp broad_pattern?(patterns) when is_list(patterns), do: Enum.any?(patterns, &broad_pattern?/1)
-  defp broad_pattern?(_pattern), do: false
+  defp broad_pattern?(pattern), do: ExAST.Pattern.broad?(pattern)
 
   @doc """
   Builds a rewrite plan for source without applying it.
