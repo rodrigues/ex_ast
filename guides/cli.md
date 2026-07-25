@@ -15,7 +15,7 @@ Search files for AST pattern matches. PATH can be a file, directory, or glob.
 | `-e`, `--pattern PATTERN` | Add a pattern to a multi-pattern batch (repeatable). See [Multiple patterns](#multiple-patterns) |
 | `--count` | Print match count only |
 | `--count-by-file` | Print per-file match counts, most matches first |
-| `--debug-query` | Print how the pattern parsed — signature, `broad?`, retrieval terms, and per-node structure — before searching (see [Debugging a query](#debugging-a-query)) |
+| `--debug-query` | Print how the pattern parsed — signature, `broad?`, retrieval terms, and per-node structure — before searching; with `-e`, one block per pattern (see [Debugging a query](#debugging-a-query)) |
 | `--limit N` | Stop after N matches |
 | `--allow-broad` | Allow patterns like `_` that match everything |
 | `--expand-imports` | Resolve `import Mod` to `Mod`'s real exports, scoped per module, so `map(a, b)` matches `Mod.map(_, _)`. Requires `Mod` to be loadable |
@@ -87,9 +87,9 @@ intended, not that the code isn't there. `--debug-query` prints the parse so you
 can see what actually runs:
 
 ```console
-$ mix ex_ast.search 'Enum.map(coll, _)' lib/ --debug-query --count
-pattern:    "Enum.map(coll, _)"
-parsed:     Enum.map(coll, _)
+$ mix ex_ast.search 'Enum.map(data, _)' lib/ --debug-query --count
+pattern:    "Enum.map(data, _)"
+parsed:     Enum.map(data, _)
 signature:  {:call, :map, 2}
 multi-node: false
 broad?:     false
@@ -97,10 +97,10 @@ terms:      alias:Enum, atom:Enum, atom:map, call.remote:Enum.map/2
 
 structure:
   remote call Enum.map, arity 2
-    coll — capture (binds one node under :coll)
+    data — capture (binds one node under :data)
     _ — wildcard (matches anything, not captured)
 
-50
+52
 ```
 
 Each header line answers a different "why zero?":
@@ -118,7 +118,7 @@ Each header line answers a different "why zero?":
   term that no file contains (a typo'd module, a struct that doesn't exist)
   yields zero. `(none …)` means retrieval falls back to the signature alone.
 - **`structure`** — what each node binds to, distinguishing a **capture**
-  (`coll`) from a **wildcard** (`_`), an **ellipsis** from a fixed arg, and a
+  (`data`) from a **wildcard** (`_`), an **ellipsis** from a fixed arg, and a
   named callee from a wildcard one.
 
 The classic false zero is an aliased module. `lib/ex_ast/index.ex` calls
@@ -204,7 +204,7 @@ Skipping search — pattern is unsupported (see above).
 `ExAST.Pattern.matchable?/1` reports whether a pattern's shape can be matched:
 
 ```elixir
-IO.puts(ExAST.Pattern.explain("Enum.map(coll, _)"))
+IO.puts(ExAST.Pattern.explain("Enum.map(data, _)"))
 ExAST.Pattern.matchable?("%{map | k: v}")  #=> false
 ```
 
@@ -237,6 +237,21 @@ mix ex_ast.search \
 
 Global flags (`--count`, `--json`, `--expand-imports`, `--limit`,
 `--allow-broad`, paths) apply to the whole batch.
+
+### Debugging a batch
+
+`--debug-query` explains every pattern in the batch, in order, before any file is
+read — the same output as [Debugging a query](#debugging-a-query), one block per
+pattern:
+
+```bash
+mix ex_ast.search -e 'IO.inspect(expr)' -e 'dbg(_)' lib/ --debug-query
+```
+
+A pattern flagged `unsupported:` is dropped from the batch rather than taking the
+whole run down with it: the remaining patterns still search, and the dropped one
+is left out of the tally, so `N pattern(s)` counts only what ran. If every
+pattern is unsupported, no search happens at all.
 
 ### Output
 

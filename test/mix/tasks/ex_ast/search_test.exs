@@ -521,5 +521,67 @@ defmodule Mix.Tasks.ExAst.SearchTest do
       assert output =~ "0\t#{pattern}"
       assert output =~ "across 1 pattern(s)"
     end
+
+    @tag :tmp_dir
+    test "--debug-query explains every pattern in the batch", %{tmp_dir: dir} do
+      file = Path.join(dir, "sample.ex")
+      File.write!(file, "IO.inspect(value)\ndbg(other)\n")
+
+      output =
+        capture_io(fn ->
+          Mix.Task.run("ex_ast.search", [
+            "-e",
+            "IO.inspect(expr)",
+            "-e",
+            "dbg(_)",
+            file,
+            "--debug-query"
+          ])
+        end)
+
+      assert output =~ "pattern:    \"IO.inspect(expr)\""
+      assert output =~ "remote call IO.inspect, arity 1"
+      assert output =~ "pattern:    \"dbg(_)\""
+      assert output =~ "local call dbg, arity 1"
+      assert output =~ "2 pattern(s), 2 match(es)"
+    end
+
+    @tag :tmp_dir
+    test "--debug-query skips an unsupported pattern and searches the rest", %{tmp_dir: dir} do
+      file = Path.join(dir, "sample.ex")
+      File.write!(file, "IO.inspect(value)\n")
+
+      output =
+        capture_io(fn ->
+          Mix.Task.run("ex_ast.search", [
+            "-e",
+            "%{m | k: v}",
+            "-e",
+            "IO.inspect(_)",
+            file,
+            "--debug-query",
+            "--count"
+          ])
+        end)
+
+      assert output =~ "unsupported: this pattern's shape crashes the matcher"
+      assert output =~ "Skipping search — pattern is unsupported"
+      assert output =~ "1\tIO.inspect(_)"
+      assert output =~ "1 match(es) across 1 pattern(s)"
+    end
+
+    @tag :tmp_dir
+    test "--debug-query runs no search when every pattern is unsupported", %{tmp_dir: dir} do
+      file = Path.join(dir, "sample.ex")
+      File.write!(file, "IO.inspect(value)\n")
+
+      output =
+        capture_io(fn ->
+          Mix.Task.run("ex_ast.search", ["-e", "%{m | k: v}", file, "--debug-query", "--count"])
+        end)
+
+      assert output =~ "Skipping search — pattern is unsupported"
+      refute output =~ "match(es)"
+    end
   end
 end

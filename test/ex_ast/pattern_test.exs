@@ -979,10 +979,10 @@ defmodule ExAST.PatternTest do
 
   describe "explain/1" do
     test "reports signature, captures, wildcards, and callees" do
-      output = Pattern.explain("Enum.map(coll, _)")
+      output = Pattern.explain("Enum.map(data, _)")
       assert output =~ "signature:  {:call, :map, 2}"
       assert output =~ "remote call Enum.map, arity 2"
-      assert output =~ "coll — capture"
+      assert output =~ "data — capture"
       assert output =~ "_ — wildcard"
     end
 
@@ -1042,11 +1042,11 @@ defmodule ExAST.PatternTest do
 
     test "flags a broad pattern in the header" do
       assert Pattern.explain("_") =~ "broad?:     true"
-      assert Pattern.explain("Enum.map(coll, _)") =~ "broad?:     false"
+      assert Pattern.explain("Enum.map(data, _)") =~ "broad?:     false"
     end
 
     test "lists the high-signal retrieval terms, hiding low-signal noise" do
-      output = Pattern.explain("Enum.map(coll, _)")
+      output = Pattern.explain("Enum.map(data, _)")
 
       assert output =~ "terms:      "
       assert output =~ "call.remote:Enum.map/2"
@@ -1102,7 +1102,7 @@ defmodule ExAST.PatternTest do
       output = Pattern.explain("%{map | key: value}")
 
       assert output =~ "unsupported: this pattern's shape crashes the matcher"
-      refute Pattern.explain("Enum.map(coll, _)") =~ "unsupported:"
+      refute Pattern.explain("Enum.map(data, _)") =~ "unsupported:"
     end
 
     test "renders access, bitstrings, sigils, and ranges legibly" do

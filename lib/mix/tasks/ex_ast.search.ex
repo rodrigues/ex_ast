@@ -14,7 +14,7 @@ defmodule Mix.Tasks.ExAst.Search do
     * `--count-by-file` — print per-file match counts, most matches first
     * `--debug-query` — print how the pattern parsed (signature, `broad?`,
       retrieval terms, and per-node structure) before searching, like
-      ast-grep's `--debug-query`
+      ast-grep's `--debug-query`. With `-e`, prints one block per pattern
     * `--limit n` — stop after returning this many matches
     * `--allow-broad` — allow unbounded broad searches like `_`
     * `--expand-imports` — resolve bare `import Mod` (and `import Mod,
@@ -74,6 +74,10 @@ defmodule Mix.Tasks.ExAst.Search do
   Global flags (`--count`, `--json`, `--expand-imports`, `--limit`,
   `--allow-broad`, paths) apply to the whole batch.
 
+  `--debug-query` explains each pattern in turn before the batch runs. A pattern
+  flagged unsupported is dropped from the batch and from the tally, so the
+  remaining patterns still search.
+
   Each pattern is tagged in the output by its raw pattern string. Two `-e` with
   the same pattern string would collide, so duplicate patterns raise an error.
 
@@ -113,6 +117,7 @@ defmodule Mix.Tasks.ExAst.Search do
   @global_switches [
     count: :boolean,
     count_by_file: :boolean,
+    debug_query: :boolean,
     limit: :integer,
     allow_broad: :boolean,
     format: :string,
@@ -131,9 +136,7 @@ defmodule Mix.Tasks.ExAst.Search do
 
   defp run_single(args) do
     {opts, positional, _} =
-      OptionParser.parse(args,
-        strict: [debug_query: :boolean] ++ @global_switches ++ SelectorOptions.switches()
-      )
+      OptionParser.parse(args, strict: @global_switches ++ SelectorOptions.switches())
 
     case positional do
       [pattern | paths] ->
@@ -170,13 +173,22 @@ defmodule Mix.Tasks.ExAst.Search do
     paths = if paths == [], do: ["lib/"], else: paths
 
     {named_patterns, key_to_str} = build_named_patterns!(patterns)
-    pattern_strs = Enum.map(patterns, & &1.pattern)
 
-    search_opts = Keyword.take(global_opts, [:limit, :allow_broad, :expand_imports])
+    case Enum.filter(named_patterns, &debug_query_keeps?(&1, key_to_str, global_opts)) do
+      [] ->
+        :ok
 
-    results = ExAST.search_many(paths, named_patterns, search_opts)
+      runnable ->
+        pattern_strs = Enum.map(runnable, fn {key, _selector} -> Map.fetch!(key_to_str, key) end)
+        search_opts = Keyword.take(global_opts, [:limit, :allow_broad, :expand_imports])
+        results = ExAST.search_many(paths, runnable, search_opts)
 
-    render_many(results, pattern_strs, key_to_str, global_opts)
+        render_many(results, pattern_strs, key_to_str, global_opts)
+    end
+  end
+
+  defp debug_query_keeps?({key, _selector}, key_to_str, opts) do
+    maybe_debug_query(Map.fetch!(key_to_str, key), opts)
   end
 
   defp reject_head_selector_flags!(global_opts) do
