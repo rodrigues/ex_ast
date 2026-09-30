@@ -124,6 +124,11 @@ defmodule ExAST.Index.TermsTest do
   end
 
   describe "from_pattern/1" do
+    test "indexes only built-in attribute names, since other names capture" do
+      assert MapSet.member?(Terms.from_pattern("@doc false"), "attribute:doc")
+      refute MapSet.member?(Terms.from_pattern("@name false"), "attribute:name")
+    end
+
     test "does not index wildcard function names in def patterns as literal names" do
       terms =
         quote do

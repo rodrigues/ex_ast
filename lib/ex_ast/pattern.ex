@@ -1073,7 +1073,44 @@ defmodule ExAST.Pattern do
     end
   end
 
+  # Elixir's reserved attributes match literally; other attribute names capture.
+  @builtin_attributes [
+    :after_compile,
+    :after_verify,
+    :before_compile,
+    :behaviour,
+    :callback,
+    :compile,
+    :deprecated,
+    :derive,
+    :dialyzer,
+    :doc,
+    :enforce_keys,
+    :external_resource,
+    :file,
+    :impl,
+    :macrocallback,
+    :moduledoc,
+    :nifs,
+    :on_definition,
+    :on_load,
+    :opaque,
+    :optional_callbacks,
+    :spec,
+    :type,
+    :typedoc,
+    :typep,
+    :vsn
+  ]
+
+  @doc false
+  def builtin_attribute?(name), do: name in @builtin_attributes
+
   defp match_attr_name(_name, {:_, nil, nil}, caps), do: {:ok, caps}
+
+  defp match_attr_name(name, pname, caps) when pname in @builtin_attributes do
+    if Ident.equal?(name, pname), do: {:ok, caps}, else: :error
+  end
 
   defp match_attr_name(name, pname, caps) when is_atom(pname) do
     cond do

@@ -7,6 +7,7 @@ defmodule ExAST.Index.Terms do
   """
 
   alias ExAST.Ident
+  alias ExAST.Pattern
 
   @type mode :: :source | :pattern
   @type signal :: :high | :normal | :low
@@ -105,11 +106,17 @@ defmodule ExAST.Index.Terms do
     {node, terms}
   end
 
-  defp visit({:@, _meta, [{name, _, args}]} = node, terms, _mode) do
+  defp visit({:@, meta, [{name, name_meta, args}]} = node, terms, mode) do
     if identifier?(name) do
-      name = identifier_name(name)
       arity = if is_list(args), do: length(args), else: 0
-      {node, ["node:attribute", "attribute:#{name}", "attribute.arity:#{arity}" | terms]}
+      terms = ["node:attribute", "attribute.arity:#{arity}" | terms]
+
+      if mode == :pattern and not Pattern.builtin_attribute?(name) do
+        # A pattern's non-built-in attribute name captures, so index it like `@_`.
+        {{:@, meta, [{:_, name_meta, args}]}, terms}
+      else
+        {node, ["attribute:#{identifier_name(name)}" | terms]}
+      end
     else
       {node, terms}
     end

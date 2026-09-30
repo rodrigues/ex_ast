@@ -3,6 +3,17 @@ defmodule ExASTTest do
 
   describe "search/2" do
     @tag :tmp_dir
+    test "an attribute name capture finds every attribute", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "a.ex"), """
+      @doc false
+      @env false
+      """)
+
+      names = dir |> ExAST.search("@name false") |> Enum.map(& &1.captures.name)
+      assert names == [:doc, :env]
+    end
+
+    @tag :tmp_dir
     test "finds matches across files", %{tmp_dir: dir} do
       File.write!(Path.join(dir, "a.ex"), """
       IO.inspect(x)

@@ -921,6 +921,13 @@ defmodule ExAST.PatternTest do
       assert {:ok, %{}} = match!("@impl true", "@impl true")
     end
 
+    test "built-in attribute names match literally" do
+      assert {:ok, %{}} = match!("@doc false", "@doc false")
+      assert :error = match!("@doc false", "@moduledoc false")
+      assert :error = match!("@type t :: atom()", "@spec t :: atom()")
+      assert :error = match!("@impl GenServer", "@behaviour mod")
+    end
+
     test "captures attribute name" do
       assert {:ok, caps} =
                match!("@env Application.get_env(:app, :key)", "@name Application.get_env(_, _)")
