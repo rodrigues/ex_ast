@@ -1179,4 +1179,78 @@ defmodule ExAST.PatternTest do
       refute result =~ "dbg"
     end
   end
+
+  describe "alias resolution" do
+    test "expands the first segment of a multi-part reference" do
+      source = """
+      alias X.Repo
+      Repo.Sub.f()
+      """
+
+      assert [_] = Patcher.find_all(source, "X.Repo.Sub.f()")
+    end
+
+    test "resolves __MODULE__ in alias directives" do
+      source = """
+      defmodule A.B do
+        alias __MODULE__.C
+        alias __MODULE__.{D, E}
+        alias __MODULE__
+
+        def run, do: {C.run(), D.run(), E.run(), B.run()}
+      end
+      """
+
+      for pattern <- ["A.B.C.run()", "A.B.D.run()", "A.B.E.run()", "A.B.run()"] do
+        assert [_] = Patcher.find_all(source, pattern), pattern
+      end
+    end
+
+    test "aliases a nested module by its first segment" do
+      source = """
+      defmodule A do
+        defmodule B.C do
+        end
+
+        def run, do: {B.run(), B.C.run()}
+      end
+      """
+
+      assert [_] = Patcher.find_all(source, "A.B.run()")
+      assert [_] = Patcher.find_all(source, "A.B.C.run()")
+    end
+
+    test "keeps an alias inside the module that declares it" do
+      source = """
+      defmodule A do
+        alias X.Repo
+        def a, do: Repo.all(q)
+
+        defmodule Inner do
+          def b, do: Repo.all(q)
+        end
+      end
+
+      defmodule B do
+        def c, do: Repo.all(q)
+      end
+      """
+
+      assert [a, b] = Patcher.find_all(source, "X.Repo.all(_)")
+      assert {a.range.start[:line], b.range.start[:line]} == {3, 6}
+      assert [c] = Patcher.find_all(source, "Repo.all(_)")
+      assert c.range.start[:line] == 11
+    end
+
+    test "a single-module file resolves aliases anywhere in it" do
+      source = """
+      defmodule A do
+        alias X.Repo
+        def a, do: Repo.all(q)
+      end
+      """
+
+      assert [_] = Patcher.find_all(source, "X.Repo.all(_)")
+    end
+  end
 end

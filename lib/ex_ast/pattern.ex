@@ -296,9 +296,15 @@ defmodule ExAST.Pattern do
   defp normalize({:|>, _meta, [left, {form, meta2, nil}]}, alias_env),
     do: normalize({form, meta2, [left]}, alias_env)
 
-  defp normalize({:__aliases__, meta, [name]} = node, alias_env) when is_atom(name) do
-    {:__aliases__, _meta, parts} = expand_alias_node(node, meta, name, alias_env)
-    {:__aliases__, nil, parts}
+  # A module's own name matches as written; aliases apply to references inside it.
+  defp normalize({:defmodule, _meta, [name | rest]}, alias_env),
+    do: {:defmodule, nil, [normalize(name, %{}) | normalize(rest, alias_env)]}
+
+  defp normalize({:__aliases__, _meta, [name | rest]}, alias_env) when is_atom(name) do
+    case alias_target(alias_env, name) do
+      {:ok, parts} -> {:__aliases__, nil, parts ++ rest}
+      :error -> {:__aliases__, nil, [name | rest]}
+    end
   end
 
   defp normalize({form, _meta, context}, _alias_env) when is_atom(form) and is_atom(context),
@@ -332,11 +338,15 @@ defmodule ExAST.Pattern do
   @imports_key {__MODULE__, :imports}
   @locals_key {__MODULE__, :locals}
   @scope_key {__MODULE__, :scope}
+  @alias_scopes_key {__MODULE__, :alias_scopes}
 
   @doc false
   def collect_aliases(ast, opts \\ []) do
-    {_ast, {aliases, _stack, locals}} =
-      Macro.traverse(ast, {%{}, [], %{}}, &collect_pre/2, &collect_post/2)
+    {_ast, {aliases, _stack, locals, modules}} =
+      Macro.traverse(ast, {%{}, [], %{}, 0}, &collect_pre/2, &collect_post/2)
+
+    # With one module every alias applies file-wide, so skip per-node scoping.
+    aliases = if modules > 1, do: aliases, else: Map.delete(aliases, @alias_scopes_key)
 
     if Keyword.get(opts, :expand_imports, false) do
       expand_imports(aliases, locals)
@@ -346,27 +356,31 @@ defmodule ExAST.Pattern do
   end
 
   # Track the enclosing module path so imports/locals stay scoped per module.
-  defp collect_pre({:defmodule, _, [name | _]} = node, {aliases, stack, locals}) do
-    {node, {aliases, [module_parts(name) | stack], locals}}
+  defp collect_pre({:defmodule, _, [name | _]} = node, {aliases, stack, locals, modules}) do
+    aliases = alias_nested_module(aliases, module_parts(name), current_path(stack))
+    {node, {aliases, [module_parts(name) | stack], locals, modules + 1}}
   end
 
-  defp collect_pre({:alias, _, args} = node, {aliases, stack, locals}) when is_list(args) do
-    {node, {collect_alias_directive(args, aliases), stack, locals}}
+  defp collect_pre({:alias, _, args} = node, {aliases, stack, locals, modules})
+       when is_list(args) do
+    {node, {collect_alias_directive(args, aliases, current_path(stack)), stack, locals, modules}}
   end
 
-  defp collect_pre({:import, _, args} = node, {aliases, stack, locals}) when is_list(args) do
-    {node, {collect_import_directive(args, aliases, current_path(stack)), stack, locals}}
+  defp collect_pre({:import, _, args} = node, {aliases, stack, locals, modules})
+       when is_list(args) do
+    aliases = collect_import_directive(args, aliases, current_path(stack))
+    {node, {aliases, stack, locals, modules}}
   end
 
-  defp collect_pre({kind, _, [head | _]} = node, {aliases, stack, locals})
+  defp collect_pre({kind, _, [head | _]} = node, {aliases, stack, locals, modules})
        when kind in [:def, :defp, :defmacro, :defmacrop] do
-    {node, {aliases, stack, add_local(locals, current_path(stack), head)}}
+    {node, {aliases, stack, add_local(locals, current_path(stack), head), modules}}
   end
 
   defp collect_pre(node, acc), do: {node, acc}
 
-  defp collect_post({:defmodule, _, _} = node, {aliases, [_ | stack], locals}) do
-    {node, {aliases, stack, locals}}
+  defp collect_post({:defmodule, _, _} = node, {aliases, [_ | stack], locals, modules}) do
+    {node, {aliases, stack, locals, modules}}
   end
 
   defp collect_post(node, acc), do: {node, acc}
@@ -522,6 +536,10 @@ defmodule ExAST.Pattern do
   def imports?(alias_env), do: Map.has_key?(alias_env, @imports_key)
 
   @doc false
+  @spec scoped?(%{optional(term()) => term()}) :: boolean()
+  def scoped?(alias_env), do: imports?(alias_env) or Map.has_key?(alias_env, @alias_scopes_key)
+
+  @doc false
   @spec scope_alias_env(%{optional(term()) => term()}, [atom()]) :: %{optional(term()) => term()}
   def scope_alias_env(alias_env, module_path) do
     Map.put(alias_env, @scope_key, module_path)
@@ -594,20 +612,36 @@ defmodule ExAST.Pattern do
     ]
   end
 
-  defp collect_alias_directive([target], acc), do: register_alias_target(acc, target)
+  defp collect_alias_directive([target], acc, path),
+    do: register_alias_target(acc, target, path)
 
-  defp collect_alias_directive([target, opts], acc) when is_list(opts) do
+  defp collect_alias_directive([target, opts], acc, path) when is_list(opts) do
     case alias_as(opts) do
-      nil -> register_alias_target(acc, target)
-      as_alias -> put_alias(acc, as_alias, target)
+      nil -> register_alias_target(acc, target, path)
+      as_alias -> put_alias(acc, as_alias, expand_module(target, path), path)
     end
   end
 
-  defp collect_alias_directive(args, acc) when is_list(args) do
+  defp collect_alias_directive(args, acc, path) when is_list(args) do
     Enum.reduce(args, acc, fn target, aliases ->
-      register_alias_target(aliases, target)
+      register_alias_target(aliases, target, path)
     end)
   end
+
+  # Elixir aliases a nested `defmodule B.C` inside `A` as `B` for `A.B`.
+  defp alias_nested_module(aliases, [first | _], [_ | _] = path),
+    do: put_alias(aliases, {:__aliases__, [], [first]}, {:__aliases__, [], path ++ [first]}, path)
+
+  defp alias_nested_module(aliases, _parts, _path), do: aliases
+
+  defp expand_module({:__MODULE__, _, context}, [_ | _] = path) when is_atom(context),
+    do: {:__aliases__, [], path}
+
+  defp expand_module({:__aliases__, meta, [{:__MODULE__, _, context} | rest]}, [_ | _] = path)
+       when is_atom(context),
+       do: {:__aliases__, meta, path ++ rest}
+
+  defp expand_module(target, _path), do: target
 
   defp alias_as(opts) do
     Enum.find_value(opts, fn
@@ -617,37 +651,66 @@ defmodule ExAST.Pattern do
     end)
   end
 
-  defp register_alias_target(acc, {:__aliases__, _, _} = target),
-    do: put_alias(acc, target, target)
+  defp register_alias_target(acc, {:__MODULE__, _, _} = target, path),
+    do: register_alias_target(acc, expand_module(target, path), path)
 
-  defp register_alias_target(acc, {{:., _, [{:__aliases__, _, prefix}, :{}]}, _, suffixes})
-       when is_list(prefix) and is_list(suffixes) do
+  defp register_alias_target(acc, {:__aliases__, _, _} = target, path) do
+    target = expand_module(target, path)
+    put_alias(acc, target, target, path)
+  end
+
+  defp register_alias_target(acc, {{:., _, [prefix, :{}]}, _, suffixes}, path)
+       when is_list(suffixes) do
+    case expand_module(prefix, path) do
+      {:__aliases__, _, prefix} when is_list(prefix) ->
+        register_alias_group(acc, prefix, suffixes, path)
+
+      _other ->
+        acc
+    end
+  end
+
+  defp register_alias_target(acc, _target, _path), do: acc
+
+  defp register_alias_group(acc, prefix, suffixes, path) do
     Enum.reduce(suffixes, acc, fn
       atom, aliases when is_atom(atom) ->
-        put_alias(aliases, {:__aliases__, [], [atom]}, {:__aliases__, [], prefix ++ [atom]})
+        put_alias(aliases, {:__aliases__, [], [atom]}, {:__aliases__, [], prefix ++ [atom]}, path)
 
       {:__aliases__, _, parts}, aliases ->
         full = {:__aliases__, [], prefix ++ parts}
-        put_alias(aliases, {:__aliases__, [], parts}, full)
+        put_alias(aliases, {:__aliases__, [], parts}, full, path)
 
       _other, aliases ->
         aliases
     end)
   end
 
-  defp register_alias_target(acc, _target), do: acc
-
-  defp put_alias(acc, {:__aliases__, _, parts}, {:__aliases__, _, target_parts}) do
+  defp put_alias(acc, {:__aliases__, _, parts}, {:__aliases__, _, target_parts}, path)
+       when is_list(target_parts) do
     short = List.last(parts)
-    Map.put(acc, short, target_parts)
+    entry = {path, short, target_parts}
+
+    acc
+    |> Map.put(short, target_parts)
+    |> Map.update(@alias_scopes_key, [entry], &[entry | &1])
   end
 
-  defp put_alias(acc, _alias_ast, _target_ast), do: acc
+  defp put_alias(acc, _alias_ast, _target_ast, _path), do: acc
 
-  defp expand_alias_node(node, meta, name, alias_env) do
-    case Map.fetch(alias_env, name) do
-      {:ok, parts} -> {:__aliases__, meta, parts}
-      :error -> node
+  # With a call-site scope, pick the innermost alias declared in an enclosing module.
+  defp alias_target(alias_env, name) do
+    with scope when is_list(scope) <- Map.get(alias_env, @scope_key),
+         {:ok, scoped} <- Map.fetch(alias_env, @alias_scopes_key) do
+      scoped
+      |> Enum.filter(fn {path, short, _parts} -> short == name and in_scope?(scope, path) end)
+      |> Enum.max_by(fn {path, _short, _parts} -> length(path) end, fn -> nil end)
+      |> case do
+        nil -> :error
+        {_path, _short, parts} -> {:ok, parts}
+      end
+    else
+      _ -> Map.fetch(alias_env, name)
     end
   end
 

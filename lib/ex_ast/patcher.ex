@@ -1029,7 +1029,7 @@ defmodule ExAST.Patcher do
   # Scope imports to the matched node's module so they don't leak into siblings.
   # Returns the (maybe scoped) env plus the ancestors it computed, for reuse.
   defp scope_env(alias_env, zipper) do
-    if Pattern.imports?(alias_env) do
+    if Pattern.scoped?(alias_env) do
       ancestors = collect_ancestors(zipper)
       {Pattern.scope_alias_env(alias_env, Pattern.module_path(ancestors)), ancestors}
     else
@@ -1039,7 +1039,7 @@ defmodule ExAST.Patcher do
 
   # Same, for sequence matching, where the module comes from the block container.
   defp scope_block_env(alias_env, container, root_ast) do
-    if Pattern.imports?(alias_env) do
+    if Pattern.scoped?(alias_env) do
       ancestors = [container | collect_ancestors_for_node(container, root_ast)]
       Pattern.scope_alias_env(alias_env, Pattern.module_path(ancestors))
     else
