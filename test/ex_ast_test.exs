@@ -56,6 +56,29 @@ defmodule ExASTTest do
       assert match.source =~ "IO.inspect"
       assert Map.has_key?(match.captures, :expr)
     end
+
+    @tag :tmp_dir
+    test "finds sigil literals when the pattern names the sigil function", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "a.ex"), """
+      defmodule Demo do
+        def render(assigns), do: ~H"<p>hi</p>"
+        def html, do: ~HTML"<p>hi</p>"
+        def regex, do: ~r/hi/
+      end
+      """)
+
+      assert [_] = ExAST.search(dir, "sigil_H(_, _)")
+      assert [_] = ExAST.search(dir, "sigil_HTML(_, _)")
+      assert [_] = ExAST.search(dir, "sigil_r(_, _)")
+      assert [_] = ExAST.search(dir, "Kernel.sigil_r(_, _)")
+    end
+
+    @tag :tmp_dir
+    test "still finds explicit sigil function calls", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "a.ex"), "sigil_r(<<\"hi\">>, [])\n")
+
+      assert [_] = ExAST.search(dir, "sigil_r(_, _)")
+    end
   end
 
   describe "search_many/3" do
@@ -131,6 +154,14 @@ defmodule ExASTTest do
 
       [{^path, 1}] = ExAST.replace(dir, "IO.inspect(expr)", "dbg(expr)", dry_run: true)
       assert File.read!(path) =~ "IO.inspect"
+    end
+
+    @tag :tmp_dir
+    test "rewrites sigil literals when the pattern names the sigil function", %{tmp_dir: dir} do
+      path = Path.join(dir, "a.ex")
+      File.write!(path, "Regex.match?(~r/hi/, text)\n")
+
+      assert [{^path, 1}] = ExAST.replace(dir, "Regex.match?(sigil_r(_, _), text)", "text")
     end
 
     @tag :tmp_dir

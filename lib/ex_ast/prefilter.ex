@@ -9,7 +9,7 @@ defmodule ExAST.Prefilter do
   def may_match?(source, pattern_or_selector) when is_binary(source) do
     pattern_or_selector
     |> required_tokens()
-    |> Enum.all?(&String.contains?(source, &1))
+    |> Enum.all?(fn alternatives -> Enum.any?(alternatives, &String.contains?(source, &1)) end)
   rescue
     _ -> true
   end
@@ -37,7 +37,11 @@ defmodule ExAST.Prefilter do
     |> Enum.flat_map(&term_tokens/1)
     |> Enum.reject(&(&1 == ""))
     |> Enum.uniq()
+    |> Enum.map(&token_alternatives/1)
   end
+
+  defp token_alternatives("sigil_" <> letters = token), do: ["~" <> letters, token]
+  defp token_alternatives(token), do: [token]
 
   defp term_tokens("call.remote:" <> rest),
     do: [rest |> String.split(".") |> List.last() |> before_arity()]
